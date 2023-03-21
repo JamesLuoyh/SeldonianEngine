@@ -327,7 +327,7 @@ class ParseTree(object):
 		"""
 		is_leaf = False
 		kwargs = {}
-
+		print(ast_node)
 		if isinstance(ast_node,ast.Tuple):
 			raise RuntimeError(
 				"Error parsing your expression."
@@ -431,6 +431,14 @@ class ParseTree(object):
 			# A constant floating point or integer number
 			node_class = ConstantNode
 			node_value = ast_node.value
+			node_name = str(node_value)
+			is_leaf = True
+			return node_class(node_name,node_value),is_leaf
+
+		elif isinstance(ast_node,ast.Num):
+			# A constant floating point or integer number
+			node_class = ConstantNode
+			node_value = ast_node.n
 			node_name = str(node_value)
 			is_leaf = True
 			return node_class(node_name,node_value),is_leaf

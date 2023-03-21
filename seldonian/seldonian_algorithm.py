@@ -10,6 +10,7 @@ from seldonian.dataset import (SupervisedDataSet,RLDataSet)
 from seldonian.candidate_selection.candidate_selection import CandidateSelection
 from seldonian.safety_test.safety_test import SafetyTest
 from seldonian.models import objectives
+from seldonian.models.pytorch_vae import PytorchVFAE
 
 class SeldonianAlgorithm():
 	def __init__(self,spec):
@@ -70,13 +71,18 @@ class SeldonianAlgorithm():
 		        sensitive_attrs=self.candidate_sensitive_attrs,
 		        num_datapoints=self.n_candidate,
 		        meta_information=self.dataset.meta_information)
-			
+			# for vae use
 			self.safety_dataset = SupervisedDataSet(
 		        features=self.safety_features,
 		        labels=self.safety_labels,
 		        sensitive_attrs=self.safety_sensitive_attrs,
 		        num_datapoints=self.n_safety,
 		        meta_information=self.dataset.meta_information)
+
+			if isinstance(self.model, PytorchVFAE):
+				pu = np.mean(self.safety_features[:, -2])
+				print("Estimated C2 (Entropy):", pu * np.log(pu) + (1-pu)*np.log(1-pu))
+				self.model.set_pu(pu)
 
 			if self.n_candidate < 2 or self.n_safety < 2:
 				warning_msg = (

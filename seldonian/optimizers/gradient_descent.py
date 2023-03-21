@@ -261,7 +261,7 @@ def gradient_descent_adam(
     solution['best_lamb'] = best_lamb
     solution['best_L'] = best_L
     solution['found_feasible_solution'] = found_feasible_solution
-    solution['theta_vals'] = np.array(theta_vals)
+    solution['theta_vals'] = None # np.array(theta_vals)
     solution['f_vals'] = np.array(f_vals)
     solution['lamb_vals'] = np.array(lamb_vals)
     solution['g_vals'] = np.array(g_vals)

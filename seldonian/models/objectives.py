@@ -347,6 +347,27 @@ def binary_logistic_loss(model,theta,X,Y,**kwargs):
 	res = np.mean(-Y*np.log(Y_pred+stability_const) - (1.0-Y)*np.log(1.0-Y_pred+stability_const))
 	return res
 
+def vae_loss(model,theta,X,Y,**kwargs):
+	""" Calculate average logistic loss 
+	over all data points for binary classification
+	
+	:param model: SeldonianModel instance
+	:param theta: The parameter weights
+	:type theta: numpy ndarray
+	:param X: The features
+	:type X: numpy ndarray
+	:param Y: The labels
+	:type Y: numpy ndarray
+
+	:return: logistic loss
+	:rtype: float
+	"""
+	loss, _ = model.predict(theta,X)
+	# res = np.mean(-Y*np.log(Y_pred+stability_const) - (1.0-Y)*np.log(1.0-Y_pred+stability_const))
+	# print(model.vae_loss)
+	return np.mean(loss)
+
+
 def gradient_binary_logistic_loss(model,theta,X,Y,**kwargs):
 	""" Gradient of binary logistic loss w.r.t. theta
 	
@@ -517,7 +538,7 @@ def False_Negative_Rate(model,theta,X,Y,**kwargs):
 def _False_Negative_Rate_binary(model,theta,X,Y,**kwargs):
 	# Average probability of being in negative class
 	# subject to the truth being the positive class
-	prediction = model.predict(theta,X)
+	loss, prediction = model.predict(theta,X)
 	pos_mask = Y==1.0 
 	return np.sum(1.0-prediction[pos_mask])/len(X[pos_mask])
 
@@ -667,8 +688,10 @@ def _Accuracy_binary(model,theta,X,Y,**kwargs):
 	:rtype: float
 	"""
 	n = len(X)
-	Y_pred_probs = model.predict(theta,X)
+	loss, Y_pred_probs = model.predict(theta,X)
+	# Y_pred_probs = model.pred
 	v = np.where(Y!=1,1.0-Y_pred_probs,Y_pred_probs)
+	# print(Y_pred_probs)
 	return np.sum(v)/n
 
 def _Accuracy_multiclass(model,theta,X,Y,**kwargs):
@@ -689,6 +712,16 @@ def _Accuracy_multiclass(model,theta,X,Y,**kwargs):
 	n = len(X)
 	Y_pred_probs = model.predict(theta,X)
 	return np.sum(Y_pred_probs[np.arange(n),Y])/n
+
+
+def VAE_Code_Senstive_Mutual_Info(model,theta,X,Y,**kwargs):
+	"""
+	This is the probability of predicting negative
+	subject to the label actually being negative
+	"""
+	loss, mi_sz = model.predict(theta,X)
+	return np.sum(mi_sz)/(len(mi_sz))
+
 
 def confusion_matrix(model,theta,X,Y,l_i,l_k,**kwargs):
 	"""
@@ -854,7 +887,7 @@ def vector_False_Negative_Rate(model,theta,X,Y,**kwargs):
 def _vector_False_Negative_Rate_binary(model,theta,X,Y,**kwargs):
 	# The probability of being in positive class
 	# subject to the truth being the other class
-	prediction = model.predict(theta,X)
+	loss, prediction = model.predict(theta,X)
 	pos_mask = Y==1.0 # this includes false positives and true negatives
 	return 1.0-prediction[pos_mask]
 
@@ -934,6 +967,14 @@ def _vector_True_Negative_Rate_binary(model,theta,X,Y,**kwargs):
 	neg_mask = Y!=1.0 
 	return 1.0 - prediction[neg_mask]
 
+def _vector_VAE_Code_Senstive_Mutual_Info(model,theta,X,Y,**kwargs):
+	"""
+	This is the probability of predicting negative
+	subject to the label actually being negative
+	"""
+	loss, mi_sz = model.predict(theta,X)
+	return mi_sz
+
 def _vector_True_Negative_Rate_multiclass(model,theta,X,Y,class_index,**kwargs):
 	"""
 	This is the probability of predicting not this class
@@ -979,10 +1020,13 @@ def _vector_Accuracy_binary(model,theta,X,Y,**kwargs):
 	:return: logistic loss
 	:rtype: float
 	"""
-	Y_pred_probs = model.predict(theta,X)
+	# Y_pred_probs = model.predict(theta,X)
+	loss, Y_pred_probs = model.predict(theta,X)
+	# Y_pred_probs = model.pred
 	# Get probabilities of true positives and true negatives
 	# Use the vector Y_pred as it already has the true positive
 	# probs. Just need to replace the probabilites in the neg mask with 1-prob
+	# print(np.sum(np.where(Y!=1,1.0-Y_pred_probs,Y_pred_probs))/len(Y_pred_probs))
 	return np.where(Y!=1,1.0-Y_pred_probs,Y_pred_probs)
 
 def _vector_Accuracy_multiclass(model,theta,X,Y,**kwargs):
@@ -1103,6 +1147,7 @@ measure_function_vector_mapper = {
 	'TNR':vector_True_Negative_Rate,
 	'ACC':vector_Accuracy,
 	'J_pi_new':vector_IS_estimate,
+	'VAE':_vector_VAE_Code_Senstive_Mutual_Info,
 }
 
 measure_function_mapper = {
@@ -1116,4 +1161,5 @@ measure_function_mapper = {
 	'TNR':True_Negative_Rate,
 	'ACC':Accuracy,
 	'J_pi_new':IS_estimate,
+	'VAE':VAE_Code_Senstive_Mutual_Info,
 }

@@ -82,6 +82,7 @@ measure_functions_dict = {
 			'FNR',
 			'TNR',
 			'ACC',
+			'VAE',
 			],
 		'multiclass_classification':
 			[

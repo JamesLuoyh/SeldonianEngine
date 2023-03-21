@@ -29,14 +29,16 @@ def pytorch_predict(theta,X,model,**kwargs):
 		model.update_model_params(theta,**kwargs)
 		model.params_updated = True
 	# Do the forward pass
-	pred = model.forward_pass(X,**kwargs)
+	loss, pred = model.forward_pass(X,**kwargs)
 	# set the predictions attribute of the model
 
 	model.predictions = pred
-
+	model.vae_loss = loss
+	
+	# model.mi_sz = model.pytorch_model.mi_sz.cpu().detach().numpy()
 	# Convert predictions into a numpy array
-	pred_numpy = pred.cpu().detach().numpy()
-	return pred_numpy
+	# model.pred = pred.cpu().detach().numpy()
+	return loss.cpu().detach().numpy(), pred.cpu().detach().numpy()
 
 def pytorch_predict_vjp(ans,theta,X,model):
 	""" Do a backward pass through the PyTorch model,
@@ -56,11 +58,16 @@ def pytorch_predict_vjp(ans,theta,X,model):
 	:return fn: A function representing the vector Jacobian operator
 	"""
 	local_predictions = model.predictions
+	vae_loss = model.vae_loss
 	def fn(v):
 		# v is a vector of shape ans, the return value of mypredict()
 		# return a 1D array [dF_i/dtheta[0],dF_i/dtheta[1],dF_i/dtheta[2]],
 		# where i is the data row index
-		external_grad = torch.from_numpy(v).float().to(model.device)
+		loss_grad, constraint_grad = v
+		external_grad = torch.from_numpy(loss_grad).float().to(model.device)
+		dpred_dtheta = model.backward_pass(
+			vae_loss,external_grad, retain_graph=True)
+		external_grad = torch.from_numpy(constraint_grad).float().to(model.device)
 		dpred_dtheta = model.backward_pass(
 			local_predictions,external_grad)
 		model.params_updated = False # resets for the 
@@ -167,7 +174,7 @@ class SupervisedPytorchBaseModel(SupervisedModel):
 		predictions = self.pytorch_model(X_torch)
 		return predictions
 
-	def backward_pass(self,predictions,external_grad):
+	def backward_pass(self,predictions,external_grad, retain_graph=False):
 		""" Do a backward pass through the PyTorch model and return the
 		(vector) gradient of the model with respect to theta as a numpy ndarray
 
@@ -176,12 +183,17 @@ class SupervisedPytorchBaseModel(SupervisedModel):
 			for more details
 		:type external_grad: torch.Tensor 
 		"""
-		self.zero_gradients()
-		predictions.backward(gradient=external_grad)
+		if retain_graph:
+			self.zero_gradients()
+		predictions.backward(gradient=external_grad, retain_graph=retain_graph)
 		grad_params_list = []
 		for param in self.pytorch_model.parameters():
 			if param.requires_grad:
-				grad_numpy = param.grad.cpu().numpy()
+				if param.grad is None:
+					grad = torch.zeros_like(param)
+				else:
+					grad = param.grad
+				grad_numpy = grad.cpu().numpy()
 				grad_params_list.append(grad_numpy.flatten())
 
 		return np.concatenate(grad_params_list)
