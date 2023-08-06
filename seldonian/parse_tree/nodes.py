@@ -133,7 +133,6 @@ class BaseNode(Node):
         the expected value of the base variable,
         not the bound.
         """ 
-    
         value = evaluate_statistic(
             statistic_name=self.measure_function_name,
             **kwargs)

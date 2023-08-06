@@ -362,7 +362,7 @@ def vae_loss(model,theta,X,Y,**kwargs):
 	:return: logistic loss
 	:rtype: float
 	"""
-	loss, _ = model.predict(theta,X)
+	loss, _, _ = model.predict(theta,X)
 	# res = np.mean(-Y*np.log(Y_pred+stability_const) - (1.0-Y)*np.log(1.0-Y_pred+stability_const))
 	# print(model.vae_loss)
 	return np.mean(loss)
@@ -538,7 +538,7 @@ def False_Negative_Rate(model,theta,X,Y,**kwargs):
 def _False_Negative_Rate_binary(model,theta,X,Y,**kwargs):
 	# Average probability of being in negative class
 	# subject to the truth being the positive class
-	loss, prediction = model.predict(theta,X)
+	loss, mi, prediction = model.predict(theta,X)
 	pos_mask = Y==1.0 
 	return np.sum(1.0-prediction[pos_mask])/len(X[pos_mask])
 
@@ -688,7 +688,7 @@ def _Accuracy_binary(model,theta,X,Y,**kwargs):
 	:rtype: float
 	"""
 	n = len(X)
-	loss, Y_pred_probs = model.predict(theta,X)
+	loss, mi, Y_pred_probs = model.predict(theta,X)
 	# Y_pred_probs = model.pred
 	v = np.where(Y!=1,1.0-Y_pred_probs,Y_pred_probs)
 	# print(Y_pred_probs)
@@ -719,8 +719,33 @@ def VAE_Code_Senstive_Mutual_Info(model,theta,X,Y,**kwargs):
 	This is the probability of predicting negative
 	subject to the label actually being negative
 	"""
-	loss, mi_sz = model.predict(theta,X)
-	return np.sum(mi_sz)/(len(mi_sz))
+	loss, mi_sz, Y_pred_probs = model.predict(theta,X)
+	# Y_pred_probs = model.pred.squeeze()
+	# Y_pred_probs = (1.0 / (1.0 + np.exp(-Y_pred_probs)) > 0.5).squeeze().astype(np.float32)
+	v = np.where(Y!=1,1.0-Y_pred_probs,Y_pred_probs)
+	n = len(mi_sz)
+	# print(v)
+	print("accurarcy", np.sum(v)/n)
+	from sklearn.metrics import roc_auc_score
+	print("auc", roc_auc_score(Y, Y_pred_probs))
+	print("Mutual Info", np.sum(mi_sz)/n)
+	print('demographic_parity', demographic_parity(Y_pred_probs, X[:, -2]))
+	return np.sum(mi_sz)/n
+
+def demographic_parity(y_prob, u):
+    # y_ = (1.0 / (1.0 + np.exp(-y_logits)) > 0.5).astype(np.float32)
+    y_ = (y_prob > 0.5).astype(np.float32)
+    print(sum(y_))
+    g, uc = np.zeros([2]), np.zeros([2])
+    for i in range(u.shape[0]):
+        if u[i] > 0:
+            g[1] += y_[i]
+            uc[1] += 1
+        else:
+            g[0] += y_[i]
+            uc[0] += 1
+    g = g / uc
+    return np.abs(g[0] - g[1])
 
 
 def confusion_matrix(model,theta,X,Y,l_i,l_k,**kwargs):
@@ -887,7 +912,8 @@ def vector_False_Negative_Rate(model,theta,X,Y,**kwargs):
 def _vector_False_Negative_Rate_binary(model,theta,X,Y,**kwargs):
 	# The probability of being in positive class
 	# subject to the truth being the other class
-	loss, prediction = model.predict(theta,X)
+	loss, mi, prediction = model.predict(theta,X)
+	prediction = prediction.suqeeze()
 	pos_mask = Y==1.0 # this includes false positives and true negatives
 	return 1.0-prediction[pos_mask]
 
@@ -972,7 +998,7 @@ def _vector_VAE_Code_Senstive_Mutual_Info(model,theta,X,Y,**kwargs):
 	This is the probability of predicting negative
 	subject to the label actually being negative
 	"""
-	loss, mi_sz = model.predict(theta,X)
+	loss, mi_sz, y_prob = model.predict(theta,X)
 	return mi_sz
 
 def _vector_True_Negative_Rate_multiclass(model,theta,X,Y,class_index,**kwargs):
@@ -1021,7 +1047,7 @@ def _vector_Accuracy_binary(model,theta,X,Y,**kwargs):
 	:rtype: float
 	"""
 	# Y_pred_probs = model.predict(theta,X)
-	loss, Y_pred_probs = model.predict(theta,X)
+	loss, mi, Y_pred_probs = model.predict(theta,X)
 	# Y_pred_probs = model.pred
 	# Get probabilities of true positives and true negatives
 	# Use the vector Y_pred as it already has the true positive

@@ -155,7 +155,6 @@ def gradient_descent_adam(
             primary_val = primary_objective(theta)
             g_vec = upper_bounds_function(theta)
             L_val = primary_val + sum(lamb*g_vec) 
-         
             if debug:
                 print("epoch,batch_i,overall_i,f,g,theta,lambda:",epoch,batch_index,gd_index,primary_val,g_vec,theta,lamb)
                 print()
@@ -193,9 +192,18 @@ def gradient_descent_adam(
 
             # Obtain gradients of both terms in Lagrangian 
             # at current values of theta and lambda
-            grad_primary_theta_val = grad_primary_theta(theta)
             gu_theta_vec = grad_upper_bound_theta(theta)
+            # print("grad_upper_bound_theta")
+            grad_primary_theta_val = grad_primary_theta(theta)
+            # print("grad_primary_theta")
 
+            if 'update_adversary' in kwargs:
+                update_adversary = kwargs['update_adversary']
+                update_adversary()
+            
+                if epoch % 5 != 0:
+                    gu_theta_vec = np.zeros_like(gu_theta_vec)
+                    grad_primary_theta_val = np.zeros_like(grad_primary_theta_val)
             grad_secondary_theta_val_vec = gu_theta_vec * lamb[:, None] ## to multiply each row of gu_theta_vec by elements of lamb
             gradient_theta = grad_primary_theta_val + np.sum(grad_secondary_theta_val_vec,axis=0)
             

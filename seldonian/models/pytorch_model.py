@@ -4,7 +4,6 @@
 import autograd.numpy as np   # Thinly-wrapped version of Numpy
 from autograd.extend import primitive, defvjp
 from seldonian.models.models import SupervisedModel
-
 import torch
 import torch.nn as nn
 
@@ -29,16 +28,19 @@ def pytorch_predict(theta,X,model,**kwargs):
 		model.update_model_params(theta,**kwargs)
 		model.params_updated = True
 	# Do the forward pass
-	loss, pred = model.forward_pass(X,**kwargs)
+	loss, mi_sz, y_prob = model.forward_pass(X,**kwargs)
 	# set the predictions attribute of the model
 
-	model.predictions = pred
+	# model.predictions = pred
 	model.vae_loss = loss
-	
+	model.mi_sz = mi_sz
+	# print(mi_sz)
+	model.pred = model.pytorch_model.pred.cpu().detach().numpy()
+	model.y_prob = y_prob
 	# model.mi_sz = model.pytorch_model.mi_sz.cpu().detach().numpy()
 	# Convert predictions into a numpy array
 	# model.pred = pred.cpu().detach().numpy()
-	return loss.cpu().detach().numpy(), pred.cpu().detach().numpy()
+	return loss.cpu().detach().numpy(), mi_sz.cpu().detach().numpy(), y_prob.cpu().detach().numpy()
 
 def pytorch_predict_vjp(ans,theta,X,model):
 	""" Do a backward pass through the PyTorch model,
@@ -57,19 +59,36 @@ def pytorch_predict_vjp(ans,theta,X,model):
 
 	:return fn: A function representing the vector Jacobian operator
 	"""
-	local_predictions = model.predictions
+	# local_predictions = model.predictions
 	vae_loss = model.vae_loss
+	mi_sz = model.mi_sz
+	y_prob = model.y_prob
 	def fn(v):
 		# v is a vector of shape ans, the return value of mypredict()
 		# return a 1D array [dF_i/dtheta[0],dF_i/dtheta[1],dF_i/dtheta[2]],
 		# where i is the data row index
-		loss_grad, constraint_grad = v
-		external_grad = torch.from_numpy(loss_grad).float().to(model.device)
-		dpred_dtheta = model.backward_pass(
-			vae_loss,external_grad, retain_graph=True)
-		external_grad = torch.from_numpy(constraint_grad).float().to(model.device)
-		dpred_dtheta = model.backward_pass(
-			local_predictions,external_grad)
+		loss_grad, mi_grad, y_prob_grad = v #, pred_grad
+		# print("here")
+		# print(v)
+		if np.sum(loss_grad) != 0:
+			# print(loss_grad)
+			external_grad = torch.from_numpy(loss_grad).float().to(model.device)
+			dpred_dtheta = model.backward_pass(
+				vae_loss, external_grad) # retain_graph=True
+		#if np.sum(mi_grad) != 0:
+		elif np.sum(mi_grad) != 0:
+			# print(mi_grad)
+			external_grad = torch.from_numpy(mi_grad).float().to(model.device)
+			dpred_dtheta = model.backward_pass(
+				mi_sz, external_grad, retain_graph=True)
+		else:
+			# print(mi_grad)
+			external_grad = torch.from_numpy(y_prob_grad).float().to(model.device)
+			dpred_dtheta = model.backward_pass(
+				y_prob, external_grad, retain_graph=True)
+		# external_grad = torch.from_numpy(pred_grad).float().to(model.device)
+		# dpred_dtheta = model.backward_pass(
+		# 	local_predictions,external_grad)
 		model.params_updated = False # resets for the 
 		return np.array(dpred_dtheta)
 	return fn
@@ -170,8 +189,18 @@ class SupervisedPytorchBaseModel(SupervisedModel):
 		:return: predictions
 		:rtype: torch.Tensor
 		"""
-		X_torch = torch.tensor(X).float().to(self.device)
-		predictions = self.pytorch_model(X_torch)
+		
+		if hasattr(self, 'discriminator'):
+			# print("predictions")
+			if type(X) == list:
+				X, S = X
+				sensitive_torch = torch.tensor(S).float().to(self.device)
+			X_torch = torch.tensor(X).float().to(self.device)
+			
+			predictions = self.pytorch_model(X_torch, sensitive_torch, self.discriminator)
+		else:
+			X_torch = torch.tensor(X).float().to(self.device)
+			predictions = self.pytorch_model(X_torch)
 		return predictions
 
 	def backward_pass(self,predictions,external_grad, retain_graph=False):

@@ -1,11 +1,11 @@
 import torch
-from torch.nn import Module, Linear, ReLU, Dropout, BCELoss, CrossEntropyLoss, Sigmoid
+from torch.nn import Module, Linear, ReLU, Dropout, BCELoss, MSELoss, CrossEntropyLoss, Sigmoid
 from .pytorch_model import SupervisedPytorchBaseModel
 from math import pi, sqrt
 from torch.distributions import Bernoulli
 
 
-class PytorchVFAE(SupervisedPytorchBaseModel):
+class PytorchICVAE(SupervisedPytorchBaseModel):
     """
     Implementation of the Variational Fair AutoEncoder. Note that the loss has to be computed separately.
     """
@@ -34,7 +34,18 @@ class PytorchVFAE(SupervisedPytorchBaseModel):
                  alpha_adv,
                  activation=ReLU(),
                  ):
-        self.vfae = VariationalFairAutoEncoder(x_dim,
+    #     super().__init__()
+        # y_dim = kwargs[y_dim]
+        # s_dim = kwargs[s_dim]
+        # x_dim = kwargs[x_dim]
+        # z_dim = kwargs[z_dim]
+        # z1_enc_dim = kwargs[z1_enc_dim]
+        # activation = kwargs[activation]
+        # z2_enc_dim = kwargs[z2_enc_dim]
+        # z1_dec_dim = kwargs[z1_dec_dim]
+        # x_dec_dim = kwargs[x_dec_dim]
+        # dropout_rate = kwargs[dropout_rate]
+        self.icvae = InvariantConditionalVariationalAutoEncoder(x_dim,
                  s_dim,
                  y_dim,
                  z1_enc_dim,
@@ -44,19 +55,11 @@ class PytorchVFAE(SupervisedPytorchBaseModel):
                  z_dim,
                  dropout_rate,
                  activation=ReLU())
-        self.discriminator = DecoderMLP(z_dim, z_dim, s_dim, activation).to(self.device)
-        self.optimizer_d = torch.optim.Adam(self.discriminator.parameters(), lr=alpha_adv)
-        return self.vfae
+        return self.icvae
 
-    # set a prior distribution for the sensitive attribute for VAE case
-    def set_pu(self, pu):
-        pu_dist = Bernoulli(probs=torch.tensor(pu).to(self.device))
-        self.vfae.set_pu(pu_dist)
-        return
-
-class VariationalFairAutoEncoder(Module):
+class InvariantConditionalVariationalAutoEncoder(Module):
     """
-    Implementation of the Variational Fair AutoEncoder. Note that the loss has to be computed separately.
+    Implementation of the Variational Fair AutoEncoder
     """
 
     def __init__(self,
@@ -71,14 +74,13 @@ class VariationalFairAutoEncoder(Module):
                  dropout_rate,
                  activation=ReLU()):
         super().__init__()
-        # self.y_out_dim = 2 if y_dim == 1 else y_dim
         self.y_out_dim = y_dim #2 if y_dim == 1 else y_dim
         self.encoder_z1 = VariationalMLP(x_dim + s_dim, z1_enc_dim, z_dim, activation)
         self.encoder_z2 = VariationalMLP(z_dim + y_dim, z2_enc_dim, z_dim, activation)
 
         self.decoder_z1 = VariationalMLP(z_dim + y_dim, z1_dec_dim, z_dim, activation)
         self.decoder_y = DecoderMLP(z_dim, x_dec_dim, self.y_out_dim, activation)
-        self.decoder_x = DecoderMLP(z_dim + s_dim, x_dec_dim, x_dim + s_dim, activation)
+        self.decoder_x = DecoderMLP(z_dim + s_dim, x_dec_dim, x_dim, activation)
 
         self.dropout = Dropout(dropout_rate)
         self.x_dim = x_dim
@@ -86,13 +88,59 @@ class VariationalFairAutoEncoder(Module):
         self.y_dim = y_dim
         self.z_dim = z_dim
         self.loss = VFAELoss()
+        self.reconstruct_loss = BCELoss(reduce=False)
 
 
-    def set_pu(self, pu):
-        self.pu = pu
-        return
+    #KL(N_0|N_1) = tr(\sigma_1^{-1} \sigma_0) + 
+    #  (\mu_1 - \mu_0)\sigma_1^{-1}(\mu_1 - \mu_0) - k +
+    #  \log( \frac{\det \sigma_1}{\det \sigma_0} )
+    def all_pairs_gaussian_kl(self, mu, sigma, add_third_term=False):
+        sigma_sq = sigma.square() + 1e-8
+        sigma_sq_inv = torch.reciprocal(sigma_sq)
 
-    def forward(self, inputs, discriminator):
+        #dot product of all sigma_inv vectors with sigma is the same as a matrix mult of diag
+        first_term = torch.matmul(sigma_sq, sigma_sq_inv.T)
+        r = torch.matmul(mu * mu,sigma_sq_inv.T)
+        r2 = mu * mu * sigma_sq_inv 
+        r2 = torch.sum(r2,1)
+        #squared distance
+        #(mu[i] - mu[j])\sigma_inv(mu[i] - mu[j]) = r[i] - 2*mu[i]*mu[j] + r[j]
+        #uses broadcasting
+        second_term = 2*torch.matmul(mu, (mu*sigma_sq_inv).T)
+        second_term = r - second_term + (r2.unsqueeze(1)).T
+        # log det A = tr log A
+        # log \frac{ det \Sigma_1 }{ det \Sigma_0 } =
+        #   \tr\log \Sigma_1 - \tr\log \Sigma_0 
+        # for each sample, we have B comparisons to B other samples...
+        #   so this cancels out
+
+        if(add_third_term):
+            r = torch.sum(torch.log(sigma_sq),1)
+            r = torch.reshape(r,[-1,1])
+            third_term = r - r.T
+        else:
+            third_term = 0
+
+        #- tf.reduce_sum(tf.log(1e-8 + tf.square(sigma)))\
+        # the dim_z ** 3 term comes fro
+        #   -the k in the original expression
+        #   -this happening k times in for each sample
+        #   -this happening for k samples
+        #return 0.5 * ( first_term + second_term + third_term - dim_z )
+        return 0.5 * ( first_term + second_term + third_term )
+
+    #
+    # kl_conditional_and_marg
+    #   \sum_{x'} KL[ q(z|x) \| q(z|x') ] + (B-1) H[q(z|x)]
+    #
+
+    #def kl_conditional_and_marg(args):
+    def kl_conditional_and_marg(self, z_mean, z_log_sigma_sq, dim_z):
+        z_sigma = ( 0.5 * z_log_sigma_sq ).exp()
+        all_pairs_GKL = self.all_pairs_gaussian_kl(z_mean, z_sigma, True) - 0.5*dim_z
+        return torch.mean(all_pairs_GKL, dim=1)
+
+    def forward(self, inputs):
         """
         :param inputs: dict containing inputs: {'x': x, 's': s, 'y': y} where x is the input feature vector, s the
         sensitive variable and y the target label.
@@ -110,8 +158,7 @@ class VariationalFairAutoEncoder(Module):
         x, s, y = inputs[:,:self.x_dim], inputs[:,self.x_dim:self.x_dim+self.s_dim], inputs[:,-self.y_dim:]
         # encode
         x_s = torch.cat([x, s], dim=1)
-        x_s = self.dropout(x_s)
-        z1_encoded, z1_enc_logvar, z1_enc_mu = self.encoder_z1(x_s)
+        z1_encoded, z1_enc_logvar, z1_enc_mu = self.encoder_z1(self.dropout(x_s))
 
         # z1_y = torch.cat([z1_encoded, y], dim=1)
         # z2_encoded, z2_enc_logvar, z2_enc_mu = self.encoder_z2(z1_y)
@@ -123,13 +170,9 @@ class VariationalFairAutoEncoder(Module):
         z1_s = torch.cat([z1_encoded, s], dim=1)
         x_decoded = self.decoder_x(z1_s)
 
-        y_decoded = self.decoder_y(z1_encoded)
-        s_decoded = discriminator(z1_encoded)
+        y_decoded = self.decoder_y(z1_encoded)        
+   
         
-        p_adversarial = Bernoulli(probs=s_decoded)
-        log_p_adv = p_adversarial.log_prob(s)
-        log_p_u = self.pu.log_prob(s)
-        self.mi_sz = log_p_adv - log_p_u
         # print(self.mi_sz)
         outputs = {
             # predictive outputs
@@ -149,6 +192,10 @@ class VariationalFairAutoEncoder(Module):
         }
         # will return the constraint C2 term. log(qu) - log(pu) instead of y_decoded
         self.vae_loss = self.loss(outputs, {'x': x, 's': s, 'y': y})
+
+        self.mi_sz = self.kl_conditional_and_marg(z1_enc_mu, z1_enc_logvar, self.z_dim)
+        # reconstruct_loss = torch.mean(self.reconstruct_loss(x_decoded, x), dim=1)
+        # self.mi_sz += reconstruct_loss
         # print(torch.softmax(y_decoded, dim=-1))
         self.pred = y_decoded # torch.softmax(y_decoded, dim=-1)[:, 1]
         self.s = s
@@ -215,6 +262,7 @@ class VFAELoss(Module):
         self.beta = beta
 
         self.bce = BCELoss()
+        self.mse = MSELoss()
         self.ce = CrossEntropyLoss()
         # self.mmd = FastMMD(mmd_dim, mmd_gamma)
 
@@ -229,7 +277,7 @@ class VFAELoss(Module):
         x_s = torch.cat([x, s], dim=-1)
         device = y.device
         supervised_loss = self.bce(y_pred['y_decoded'], y.to(device))
-        reconstruction_loss = self.bce(y_pred['x_decoded'], x_s)
+        reconstruction_loss = self.bce(y_pred['x_decoded'], x)
         zeros = torch.zeros_like(y_pred['z1_enc_logvar'])
         kl_loss_z1 = self._kl_gaussian(y_pred['z1_enc_logvar'],
                                        y_pred['z1_enc_mu'],
@@ -284,33 +332,3 @@ class VFAELoss(Module):
         non_protected = batch[idx_non_protected]
 
         return protected, non_protected
-
-
-class FastMMD(Module):
-    """ Fast Maximum Mean Discrepancy approximated using the random kitchen sinks method.
-    """
-
-    def __init__(self, out_features, gamma):
-        super().__init__()
-        self.gamma = gamma
-        self.out_features = out_features
-
-    def forward(self, a, b):
-        in_features = a.shape[-1]
-
-        # W sampled from normal
-        w_rand = torch.randn((in_features, self.out_features), device=a.device)
-        # b sampled from uniform
-        b_rand = torch.zeros((self.out_features,), device=a.device).uniform_(0, 2 * pi)
-
-        phi_a = self._phi(a, w_rand, b_rand).mean(dim=0)
-        phi_b = self._phi(b, w_rand, b_rand).mean(dim=0)
-        mmd = torch.norm(phi_a - phi_b, 2)
-
-        return mmd
-
-    def _phi(self, x, w, b):
-        scale_a = sqrt(2 / self.out_features)
-        scale_b = sqrt(2 / self.gamma)
-        out = scale_a * (scale_b * (x @ w + b)).cos()
-        return out

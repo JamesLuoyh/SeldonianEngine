@@ -1,11 +1,12 @@
 import torch
-from torch.nn import Module, Linear, ReLU, Dropout, BCELoss, CrossEntropyLoss, Sigmoid
+from torch.nn import Module, Linear, ReLU, Dropout, BCELoss, CrossEntropyLoss, Sigmoid, Sequential, Parameter
 from .pytorch_model import SupervisedPytorchBaseModel
 from math import pi, sqrt
 from torch.distributions import Bernoulli
+from torch.nn.functional import softplus
 
 
-class PytorchVFAE(SupervisedPytorchBaseModel):
+class PytorchFCRL(SupervisedPytorchBaseModel):
     """
     Implementation of the Variational Fair AutoEncoder. Note that the loss has to be computed separately.
     """
@@ -33,30 +34,38 @@ class PytorchVFAE(SupervisedPytorchBaseModel):
                  dropout_rate,
                  alpha_adv,
                  activation=ReLU(),
+                 s_num=2,
+                 nce_size=50,
                  ):
-        self.vfae = VariationalFairAutoEncoder(x_dim,
-                 s_dim,
-                 y_dim,
-                 z1_enc_dim,
-                 z2_enc_dim,
-                 z1_dec_dim,
-                 x_dec_dim,
-                 z_dim,
-                 dropout_rate,
-                 activation=ReLU())
-        self.discriminator = DecoderMLP(z_dim, z_dim, s_dim, activation).to(self.device)
-        self.optimizer_d = torch.optim.Adam(self.discriminator.parameters(), lr=alpha_adv)
-        return self.vfae
+    #     super().__init__()
+        # y_dim = kwargs[y_dim]
+        # s_dim = kwargs[s_dim]
+        # x_dim = kwargs[x_dim]
+        # z_dim = kwargs[z_dim]
+        # z1_enc_dim = kwargs[z1_enc_dim]
+        # activation = kwargs[activation]
+        # z2_enc_dim = kwargs[z2_enc_dim]
+        # z1_dec_dim = kwargs[z1_dec_dim]
+        # x_dec_dim = kwargs[x_dec_dim]
+        # dropout_rate = kwargs[dropout_rate]
+        self.fcrl = ContrastiveVariationalAutoEncoder(x_dim,
+                s_dim,
+                y_dim,
+                z1_enc_dim,
+                z2_enc_dim,
+                z1_dec_dim,
+                x_dec_dim,
+                z_dim,
+                dropout_rate,
+                activation=ReLU(),
+                s_num=s_num,
+                nce_size=nce_size,
+                device=self.device)
+        return self.fcrl
 
-    # set a prior distribution for the sensitive attribute for VAE case
-    def set_pu(self, pu):
-        pu_dist = Bernoulli(probs=torch.tensor(pu).to(self.device))
-        self.vfae.set_pu(pu_dist)
-        return
-
-class VariationalFairAutoEncoder(Module):
+class ContrastiveVariationalAutoEncoder(Module):
     """
-    Implementation of the Variational Fair AutoEncoder. Note that the loss has to be computed separately.
+    Implementation of the Variational Fair AutoEncoder
     """
 
     def __init__(self,
@@ -69,9 +78,11 @@ class VariationalFairAutoEncoder(Module):
                  x_dec_dim,
                  z_dim,
                  dropout_rate,
-                 activation=ReLU()):
+                 activation=ReLU(),
+                 s_num=2,
+                 nce_size=50,
+                 device='cpu'):
         super().__init__()
-        # self.y_out_dim = 2 if y_dim == 1 else y_dim
         self.y_out_dim = y_dim #2 if y_dim == 1 else y_dim
         self.encoder_z1 = VariationalMLP(x_dim + s_dim, z1_enc_dim, z_dim, activation)
         self.encoder_z2 = VariationalMLP(z_dim + y_dim, z2_enc_dim, z_dim, activation)
@@ -85,14 +96,30 @@ class VariationalFairAutoEncoder(Module):
         self.s_dim = s_dim
         self.y_dim = y_dim
         self.z_dim = z_dim
+        self.s_num = s_num
         self.loss = VFAELoss()
+        self._nce_estimator = CPC([x_dim], z_dim, s_num, nce_size, device)
+        self.to(device)
 
+    def to(self, device):
+        self.device = device
+        return super().to(device=device)
+    
+    @staticmethod
+    def kl_gaussian(logvar_a, mu_a):
+        """
+        Average KL divergence between two (multivariate) gaussians based on their mean and standard deviation for a
+        batch of input samples. https://arxiv.org/abs/1405.2664
 
-    def set_pu(self, pu):
-        self.pu = pu
-        return
+        :param logvar_a: standard deviation a
+        :param mu_a: mean a
+        :return: kl divergence
+        """
+        per_example_kl = - logvar_a - 1 + (logvar_a.exp() + (mu_a).square())
+        kl = 0.5 * torch.sum(per_example_kl, dim=1)
+        return kl
 
-    def forward(self, inputs, discriminator):
+    def forward(self, inputs):
         """
         :param inputs: dict containing inputs: {'x': x, 's': s, 'y': y} where x is the input feature vector, s the
         sensitive variable and y the target label.
@@ -110,8 +137,7 @@ class VariationalFairAutoEncoder(Module):
         x, s, y = inputs[:,:self.x_dim], inputs[:,self.x_dim:self.x_dim+self.s_dim], inputs[:,-self.y_dim:]
         # encode
         x_s = torch.cat([x, s], dim=1)
-        x_s = self.dropout(x_s)
-        z1_encoded, z1_enc_logvar, z1_enc_mu = self.encoder_z1(x_s)
+        z1_encoded, z1_enc_logvar, z1_enc_mu = self.encoder_z1(self.dropout(x_s))
 
         # z1_y = torch.cat([z1_encoded, y], dim=1)
         # z2_encoded, z2_enc_logvar, z2_enc_mu = self.encoder_z2(z1_y)
@@ -123,13 +149,9 @@ class VariationalFairAutoEncoder(Module):
         z1_s = torch.cat([z1_encoded, s], dim=1)
         x_decoded = self.decoder_x(z1_s)
 
-        y_decoded = self.decoder_y(z1_encoded)
-        s_decoded = discriminator(z1_encoded)
+        y_decoded = self.decoder_y(z1_encoded)        
+   
         
-        p_adversarial = Bernoulli(probs=s_decoded)
-        log_p_adv = p_adversarial.log_prob(s)
-        log_p_u = self.pu.log_prob(s)
-        self.mi_sz = log_p_adv - log_p_u
         # print(self.mi_sz)
         outputs = {
             # predictive outputs
@@ -149,13 +171,19 @@ class VariationalFairAutoEncoder(Module):
         }
         # will return the constraint C2 term. log(qu) - log(pu) instead of y_decoded
         self.vae_loss = self.loss(outputs, {'x': x, 's': s, 'y': y})
+        
+        kl_gaussian = self.kl_gaussian(z1_enc_logvar, z1_enc_mu)
+        nce_estimate = self._nce_estimator(x, s, z1_encoded)
+
+        self.mi_sz = kl_gaussian - nce_estimate
+        self.mi_sz = self.mi_sz.unsqueeze(1)
         # print(torch.softmax(y_decoded, dim=-1))
         self.pred = y_decoded # torch.softmax(y_decoded, dim=-1)[:, 1]
         self.s = s
         self.z = z1_encoded
         self.y_prob = y_decoded.squeeze()
         return self.vae_loss, self.mi_sz, self.y_prob
-
+    
 class VariationalMLP(Module):
     """
     Single hidden layer MLP using the reparameterization trick for sampling a latent z.
@@ -250,7 +278,7 @@ class VFAELoss(Module):
         # z1_protected, z1_non_protected = self._separate_protected(z1_enc, s)
         # if len(z1_protected) > 0:
         #     loss += self.beta * self.mmd(z1_protected, z1_non_protected)
-        return loss
+        return self.alpha * supervised_loss
 
     @staticmethod
     def _kl_gaussian(logvar_a, mu_a, logvar_b, mu_b):
@@ -285,32 +313,55 @@ class VFAELoss(Module):
 
         return protected, non_protected
 
-
-class FastMMD(Module):
-    """ Fast Maximum Mean Discrepancy approximated using the random kitchen sinks method.
-    """
-
-    def __init__(self, out_features, gamma):
+class CPC(Module):
+    def __init__(self, input_size, z_size, c_size, hidden_size, device):
         super().__init__()
-        self.gamma = gamma
-        self.out_features = out_features
 
-    def forward(self, a, b):
-        in_features = a.shape[-1]
+        self.f_x = Sequential(
+            Linear(input_size[0], hidden_size),
+            ReLU(),
+            Linear(hidden_size, z_size),
+        )
 
-        # W sampled from normal
-        w_rand = torch.randn((in_features, self.out_features), device=a.device)
-        # b sampled from uniform
-        b_rand = torch.zeros((self.out_features,), device=a.device).uniform_(0, 2 * pi)
+        # just make one transform
+        self.f_z = Sequential(Linear(z_size, z_size))
+        self.w_s = Parameter(data=torch.randn(c_size, z_size, z_size))
+        self.to(device)
 
-        phi_a = self._phi(a, w_rand, b_rand).mean(dim=0)
-        phi_b = self._phi(b, w_rand, b_rand).mean(dim=0)
-        mmd = torch.norm(phi_a - phi_b, 2)
+    def to(self, device):
+        self.device = device
+        return super().to(device=device)
 
-        return mmd
+    def forward(self, x, c, z):
+        N = x.shape[0]
+        c = c.long()
+        f_x = self.f_x(x)
+        f_z = self.f_z(z)
+        temp = torch.bmm(
+            torch.bmm(
+                f_x.unsqueeze(2).transpose(1, 2), self.w_s[c.reshape(-1)]
+            ),
+            f_z.unsqueeze(2),
+        )
+        T = softplus(temp.view(-1))
 
-    def _phi(self, x, w, b):
-        scale_a = sqrt(2 / self.out_features)
-        scale_b = sqrt(2 / self.gamma)
-        out = scale_a * (scale_b * (x @ w + b)).cos()
-        return out
+        neg_T = torch.zeros(N, device=self.device)
+
+        for cat in set(c.reshape(-1).tolist()):
+            f_z_given_c = f_z[(c == cat).reshape(-1)]
+            f_x_given_c = f_x[(c == cat).reshape(-1)]
+
+            # (N,Z) X (Z,Z)
+            temp = softplus(
+                f_x_given_c @ self.w_s[cat] @ f_z_given_c.transpose(0, 1)
+            )
+            # columns are different Z's, rows are different x's.
+            # mean along dim 0, is the mean over the same Z different X
+            # mean along dim 1, is the mean over the same X different Z
+            # Change to sum because the contrastive estimation model overfit
+            # for the Z corresponding to the X easily. When Z and X does not match
+            # the T evaluated is almost 0 and the average is also 0.
+            # This will make MI(Z;X|S) very big and the MI(Z;S) becomes negative.
+            neg_T[(c == cat).reshape(-1)] = temp.sum(dim=1).view(-1)
+
+        return torch.log(T + 1e-16) - torch.log(neg_T + 1e-16)

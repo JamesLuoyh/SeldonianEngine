@@ -5,6 +5,11 @@ import autograd.numpy as np   # Thinly-wrapped version of Numpy
 import math
 import pandas as pd
 from functools import partial
+from torch.distributions import Bernoulli
+import torch
+from torch import nn
+from seldonian.models.pytorch_vae import PytorchVFAE
+from seldonian.models.pytorch_cnn_vfae import PytorchFacialVAE
 
 from seldonian.models import objectives
 from seldonian.dataset import SupervisedDataSet,RLDataSet
@@ -205,7 +210,35 @@ class CandidateSelection(object):
 							"Using a builtin primary objective gradient"
 							" is not yet supported for regimes other"
 							" than supervised learning")
-
+			stability_const = 1e-15
+			loss = nn.BCELoss()
+			if isinstance(self.model, PytorchVFAE) or isinstance(self.model, PytorchFacialVAE):
+				def update_adversary():
+					if hasattr(self.model, 'discriminator'):
+						# print("discriminator")
+						self.model.pytorch_model.eval()
+						if type(self.batch_features) == list:
+							X, S = self.batch_features
+							X_torch = torch.tensor(X).float().to(self.model.device, non_blocking=True)
+							S_torch = torch.tensor(S).float().to(self.model.device, non_blocking=True)
+							self.model.pytorch_model(X_torch, S_torch, self.model.discriminator)
+						else:
+							X_torch = torch.tensor(self.batch_features).float().to(self.model.device, non_blocking=True)
+							self.model.pytorch_model(X_torch, self.model.discriminator)
+						self.model.discriminator.train()
+						self.model.optimizer_d.zero_grad()
+						s_decoded = self.model.discriminator(self.model.pytorch_model.z)
+						# p_adversarial = Bernoulli(logits=s_decoded)
+						# log_p_adv = p_adversarial.log_prob(self.model.pytorch_model.s)
+						# discriminator_loss = -log_p_adv.mean(dim=0)
+						discriminator_loss = loss(s_decoded, self.model.pytorch_model.s)
+						# print("discriminating likelihood", torch.exp(log_p_adv).mean(dim=0))
+						# print("discriminating likelihood", discriminator_loss)
+						discriminator_loss.backward()
+						self.model.optimizer_d.step()
+						self.model.discriminator.eval()
+						self.model.pytorch_model.train()
+				gd_kwargs['update_adversary'] = update_adversary
 			# If user specified the gradient of the primary
 			# objective, then pass it here
 			if kwargs['custom_primary_gradient_fn'] !=None:
@@ -236,7 +269,7 @@ class CandidateSelection(object):
 
 			if self.write_logfile:
 				log_counter = 0
-				logdir = os.path.join(os.getcwd(),
+				logdir = os.path.join('/media/yuhongluo/SeldonianEngine/',
 					'logs')
 				os.makedirs(logdir,exist_ok=True)
 				filename = os.path.join(logdir,
