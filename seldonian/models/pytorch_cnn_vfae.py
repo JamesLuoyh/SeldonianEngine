@@ -1,7 +1,7 @@
 from seldonian.models.pytorch_model import SupervisedPytorchBaseModel
 import torch.nn as nn
 import torch
-from torch.distributions import Bernoulli
+from torch.distributions import Bernoulli, Categorical
 import torch.nn.functional as F
 
 
@@ -46,13 +46,20 @@ class PytorchFacialVAE(SupervisedPytorchBaseModel):
                 activation=nn.ReLU())
         self.discriminator = DecoderMLP(z_dim, z_dim, s_dim, activation).to(self.device)
         self.optimizer_d = torch.optim.Adam(self.discriminator.parameters(), lr=alpha_adv)
+        self.s_dim = s_dim
         return self.vfae
        
     # set a prior distribution for the sensitive attribute for VAE case
     def set_pu(self, pu):
-        pu_dist = Bernoulli(probs=torch.tensor(pu).to(self.device))
+        if len(pu) == 1:
+            pu_dist = Bernoulli(probs=torch.tensor(pu).to(self.device))
+        else:
+            pu_dist = Categorical(probs=torch.tensor(pu).to(self.device))
         self.vfae.set_pu(pu_dist)
         return
+
+    def get_representations(self, X):
+        return self.vfae.get_representations(X)
 
 class FacialVAE(nn.Module):
     def __init__(self,
@@ -94,7 +101,7 @@ class FacialVAE(nn.Module):
         modules = []
 
         # latent_dim + 1 for adding the sensitve attribute
-        self.decoder_input = nn.Linear(self.latent_dim + 1, self.hidden_dims[-1] * 9)
+        self.decoder_input = nn.Linear(self.latent_dim + self.s_dim, self.hidden_dims[-1] * 9)
 
         self.hidden_dims.reverse()
 
@@ -122,9 +129,17 @@ class FacialVAE(nn.Module):
             nn.Tanh()
         )
 
+        self.decoder_y = DecoderMLPBinary(z_dim, x_dec_dim, 1, activation)
+        self.bce = nn.BCELoss()
+
     def set_pu(self, pu):
         self.pu = pu
         return
+
+    def get_representations(self, input):
+        mu, log_var = self.encode(input)
+        z = self.reparameterize(mu, log_var)
+        return z
 
     def encode(self, input):
         """
@@ -167,25 +182,29 @@ class FacialVAE(nn.Module):
         eps = torch.randn_like(std)
         return eps * std + mu
 
-    def forward(self, input, sensitive_attributes, discriminator):
+    def forward(self, input, sensitive_attributes, labels, discriminator):
         x = input
         s = sensitive_attributes
+        y = labels
         mu, log_var = self.encode(x)
         z = self.reparameterize(mu, log_var)
         z_s = torch.cat([z, s], dim=1)
 
         s_decoded = discriminator(z)
-        
-        p_adversarial = Bernoulli(probs=s_decoded)
+        p_adversarial = Categorical(probs=s_decoded)
+        s = torch.argmax(s, dim=1)
         log_p_adv = p_adversarial.log_prob(s)
         log_p_u = self.pu.log_prob(s)
+        # print("log_p_adv", log_p_adv)
+        # print("log_p_u", log_p_u)
         self.mi_sz = log_p_adv - log_p_u
         x_decoded = self.decode(z_s)
+        y_decoded = self.decoder_y(z)
         # print(self.mi_sz)
         outputs = {
             # predictive outputs
             'x_decoded': x_decoded,
-            # 'y_decoded': y_decoded,
+            'y_decoded': y_decoded,
             'z1_encoded': z,
 
             # outputs for regularization loss terms
@@ -199,13 +218,13 @@ class FacialVAE(nn.Module):
             # 'z1_dec_mu': z1_dec_mu
         }
         # will return the constraint C2 term. log(qu) - log(pu) instead of y_decoded
-        self.vae_loss = self.loss_function(outputs, {'x': x, 's': s})
+        self.vae_loss = self.loss_function(outputs, {'x': x, 's': s, 'y': y})
         # print(torch.softmax(y_decoded, dim=-1))
         self.mi_sz = self.mi_sz.flatten()
-        self.pred = torch.zeros_like(self.mi_sz) - 1 # torch.softmax(y_decoded, dim=-1)[:, 1]
+        self.pred = y_decoded # torch.softmax(y_decoded, dim=-1)[:, 1]
         self.s = s
         self.z = z
-        self.y_prob = self.pred #y_decoded.squeeze()
+        self.y_prob = y_decoded.squeeze()
         return self.vae_loss, self.mi_sz, self.y_prob
 
     def loss_function(self, prediction, actual):
@@ -216,6 +235,7 @@ class FacialVAE(nn.Module):
         """
         recons = prediction['x_decoded']
         input = actual['x']
+        y = actual['y']
         mu = prediction['z1_enc_mu']
         log_var = prediction['z1_enc_logvar']
 
@@ -224,8 +244,9 @@ class FacialVAE(nn.Module):
 
 
         kld_loss = torch.mean(-0.5 * torch.sum(1 + log_var - mu ** 2 - log_var.exp(), dim = 1), dim = 0)
-
-        loss = recons_loss + kld_loss
+        supervised_loss = self.bce(prediction['y_decoded'], y.unsqueeze(1))
+        # print(supervised_loss)
+        loss = 0.1 * (recons_loss + kld_loss) + 10*supervised_loss
         return loss #{'loss': loss, 'Reconstruction_Loss':recons_loss.detach(), 'KLD':-kld_loss.detach()}
 
     def sample(self,
@@ -265,9 +286,26 @@ class DecoderMLP(nn.Module):
         self.lin_encoder = nn.Linear(in_features, hidden_dim)
         self.activation = activation
         self.lin_out = nn.Linear(hidden_dim, latent_dim)
+        self.softmax = nn.Softmax(dim=1)
+
+    def forward(self, inputs):
+        x = self.activation(self.lin_encoder(inputs))
+        return self.softmax(self.lin_out(x))
+
+class DecoderMLPBinary(nn.Module):
+    """
+     Single hidden layer MLP used for decoding.
+    """
+
+    def __init__(self, in_features, hidden_dim, latent_dim, activation):
+        super().__init__()
+        self.lin_encoder = nn.Linear(in_features, hidden_dim)
+        self.activation = activation
+        self.lin_encoder_2 = nn.Linear(in_features, hidden_dim//2)
+        self.lin_out = nn.Linear(hidden_dim//2, latent_dim)
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, inputs):
         x = self.activation(self.lin_encoder(inputs))
+        x = self.activation(self.lin_encoder_2(x))
         return self.sigmoid(self.lin_out(x))
-

@@ -129,6 +129,22 @@ class SupervisedPytorchBaseModel(SupervisedModel):
 		"""
 		return pytorch_predict(theta,X,self)
 
+	def get_representations(self,theta,X,**kwargs):
+		""" For unsupervised learning.
+		Call the encoder of the PyTorch model to get representations for input X.
+		Must convert back to numpy array before returning
+
+		:param theta: model weights
+		:type theta: numpy ndarray
+
+		:param X: model features
+		:type X: numpy ndarray
+
+		:return pred_numpy: latent represetations 
+		:rtype pred_numpy: 
+		"""
+		raise NotImplementedError
+
 	def get_model_params(self,*args):
 		""" Return weights of the model as a flattened 1D array
 		Also return the number of elements in each model parameter """
@@ -193,11 +209,14 @@ class SupervisedPytorchBaseModel(SupervisedModel):
 		if hasattr(self, 'discriminator'):
 			# print("predictions")
 			if type(X) == list:
-				X, S = X
+				X, S, Y = X
 				sensitive_torch = torch.tensor(S).float().to(self.device)
-			X_torch = torch.tensor(X).float().to(self.device)
-			
-			predictions = self.pytorch_model(X_torch, sensitive_torch, self.discriminator)
+				label_torch = torch.tensor(Y).float().to(self.device)
+				X_torch = torch.tensor(X).float().to(self.device)
+				predictions = self.pytorch_model(X_torch, sensitive_torch, label_torch, self.discriminator)
+			else:
+				X_torch = torch.tensor(X).float().to(self.device)
+				predictions = self.pytorch_model(X_torch, self.discriminator)
 		else:
 			X_torch = torch.tensor(X).float().to(self.device)
 			predictions = self.pytorch_model(X_torch)

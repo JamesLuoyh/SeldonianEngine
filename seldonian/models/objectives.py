@@ -725,12 +725,35 @@ def VAE_Code_Senstive_Mutual_Info(model,theta,X,Y,**kwargs):
 	v = np.where(Y!=1,1.0-Y_pred_probs,Y_pred_probs)
 	n = len(mi_sz)
 	# print(v)
+	# print(Y_pred_probs)
 	print("accurarcy", np.sum(v)/n)
 	from sklearn.metrics import roc_auc_score
 	print("auc", roc_auc_score(Y, Y_pred_probs))
 	print("Mutual Info", np.sum(mi_sz)/n)
-	print('demographic_parity', demographic_parity(Y_pred_probs, X[:, -2]))
+	s_dim = model.pytorch_model.s_dim
+	if type(X) == list:
+		X, S, Y = X
+		
+	else:
+		S = X[:, -1 - s_dim: -1]
+	if s_dim > 1:
+		print('demographic_parity', multiclass_demographic_parity(Y_pred_probs, S))
+	else:
+		print('demographic_parity', demographic_parity(Y_pred_probs, S))
 	return np.sum(mi_sz)/n
+
+def multiclass_demographic_parity(y_pred, S):
+    # y_ = (1.0 / (1.0 + np.exp(-y_logits)) > 0.5).astype(np.float32)
+    y_ = (y_pred > 0.5).astype(np.float32)
+    
+    n_classes = S.shape[1]
+    S = np.argmax(S, axis=1)
+    g, uc = np.zeros([n_classes]), np.zeros([n_classes]) + 1e-15 # avoid division by 0
+    for i in range(S.shape[0]):
+        uc[S[i]] += 1.0
+        g[S[i]] += y_[i]
+    g = g / uc
+    return np.abs(np.max(g) - np.min(g))
 
 def demographic_parity(y_prob, u):
     # y_ = (1.0 / (1.0 + np.exp(-y_logits)) > 0.5).astype(np.float32)

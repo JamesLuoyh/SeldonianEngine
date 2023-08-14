@@ -5,7 +5,7 @@ import autograd.numpy as np   # Thinly-wrapped version of Numpy
 import math
 import pandas as pd
 from functools import partial
-from torch.distributions import Bernoulli
+from torch.distributions import Categorical
 import torch
 from torch import nn
 from seldonian.models.pytorch_vae import PytorchVFAE
@@ -184,6 +184,7 @@ class CandidateSelection(object):
 				lambda_init=kwargs['lambda_init'],
 				verbose=kwargs['verbose'],
 				debug=kwargs['debug'],
+				n_adv_rounds=kwargs['n_adv_rounds'],
 			)
 			# Option to use builtin primary gradient (could be faster than autograd)
 			if 'use_builtin_primary_gradient_fn' in kwargs:
@@ -211,32 +212,39 @@ class CandidateSelection(object):
 							" is not yet supported for regimes other"
 							" than supervised learning")
 			stability_const = 1e-15
-			loss = nn.BCELoss()
+			
 			if isinstance(self.model, PytorchVFAE) or isinstance(self.model, PytorchFacialVAE):
 				def update_adversary():
 					if hasattr(self.model, 'discriminator'):
 						# print("discriminator")
 						self.model.pytorch_model.eval()
+						self.model.vfae.eval()
 						if type(self.batch_features) == list:
-							X, S = self.batch_features
+							X, S, Y = self.batch_features
 							X_torch = torch.tensor(X).float().to(self.model.device, non_blocking=True)
 							S_torch = torch.tensor(S).float().to(self.model.device, non_blocking=True)
-							self.model.pytorch_model(X_torch, S_torch, self.model.discriminator)
+							Y_torch = torch.tensor(Y).float().to(self.model.device, non_blocking=True)
+							self.model.pytorch_model(X_torch, S_torch, Y_torch, self.model.discriminator)
 						else:
 							X_torch = torch.tensor(self.batch_features).float().to(self.model.device, non_blocking=True)
 							self.model.pytorch_model(X_torch, self.model.discriminator)
 						self.model.discriminator.train()
 						self.model.optimizer_d.zero_grad()
 						s_decoded = self.model.discriminator(self.model.pytorch_model.z)
-						# p_adversarial = Bernoulli(logits=s_decoded)
-						# log_p_adv = p_adversarial.log_prob(self.model.pytorch_model.s)
-						# discriminator_loss = -log_p_adv.mean(dim=0)
-						discriminator_loss = loss(s_decoded, self.model.pytorch_model.s)
+						if self.model.pytorch_model.s_dim == 1:
+							loss = nn.BCELoss()
+							discriminator_loss = loss(s_decoded, self.model.pytorch_model.s)
+						else:
+							p_adversarial = Categorical(probs=s_decoded)
+							log_p_adv = p_adversarial.log_prob(self.model.pytorch_model.s)
+							discriminator_loss = -log_p_adv.mean(dim=0)
+						# discriminator_loss = loss(s_decoded, self.model.pytorch_model.s)
 						# print("discriminating likelihood", torch.exp(log_p_adv).mean(dim=0))
 						# print("discriminating likelihood", discriminator_loss)
 						discriminator_loss.backward()
 						self.model.optimizer_d.step()
 						self.model.discriminator.eval()
+						self.model.vfae.train()
 						self.model.pytorch_model.train()
 				gd_kwargs['update_adversary'] = update_adversary
 			# If user specified the gradient of the primary
@@ -475,4 +483,3 @@ class CandidateSelection(object):
 		return np.array(upper_bounds,dtype='float')
 
 
-		

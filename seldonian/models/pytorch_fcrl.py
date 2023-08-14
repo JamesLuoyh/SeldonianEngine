@@ -61,6 +61,7 @@ class PytorchFCRL(SupervisedPytorchBaseModel):
                 s_num=s_num,
                 nce_size=nce_size,
                 device=self.device)
+        self.s_dim = s_dim
         return self.fcrl
 
 class ContrastiveVariationalAutoEncoder(Module):

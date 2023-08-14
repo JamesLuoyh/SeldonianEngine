@@ -7,19 +7,19 @@ from seldonian.spec import SupervisedSpec
 from seldonian.dataset import SupervisedDataSet
 from seldonian.utils.io_utils import load_pickle,save_pickle
 from seldonian.models import objectives
-from seldonian.models.pytorch_cnn_vfae import PytorchFacialVAE
+from seldonian.models.pytorch_vae import PytorchVFAE
 from seldonian.seldonian_algorithm import SeldonianAlgorithm
 from seldonian.parse_tree.parse_tree import (
 	make_parse_trees_from_constraints)
 import torch
 
 sub_regime = "classification"
-N=23700
+# N=23700
 print("Loading features,labels,sensitive_attrs from file...")
 
-savename_features = '/media/yuhongluo/face_recog/features.pkl'
-savename_labels = '/media/yuhongluo/face_recog/age_labels.pkl'
-savename_sensitive_attrs = '/media/yuhongluo/face_recog/sensitive_attrs.pkl'
+savename_features = '/media/yuhongluo/health/features.pkl'
+savename_labels = '/media/yuhongluo/health/gender_labels.pkl'
+savename_sensitive_attrs = '/media/yuhongluo/health/sensitive_attrs.pkl'
 
 features = load_pickle(savename_features)
 labels = load_pickle(savename_labels)
@@ -27,11 +27,9 @@ sensitive_attrs = load_pickle(savename_sensitive_attrs)
 print(features.shape)
 print(sensitive_attrs.shape)
 print(labels.shape)
-assert len(features) == N
-assert len(labels) == N
-assert len(sensitive_attrs) == N
+
 frac_data_in_safety = 0.5
-sensitive_col_names = ['0','1', '2', '3', '4', '5']
+sensitive_col_names = ['0','1', '2', '3', '4', '5', '6', '7', '8', '9']
 
 meta_information = {}
 meta_information['feature_col_names'] = ['img']
@@ -40,13 +38,13 @@ meta_information['sensitive_col_names'] = sensitive_col_names
 meta_information['sub_regime'] = sub_regime
 print("Making SupervisedDataSet...")
 dataset = SupervisedDataSet(
-    features=[features,sensitive_attrs,labels],
+    features=np.concatenate((features,sensitive_attrs,np.expand_dims(labels, axis=1)), -1),
     labels=labels,
     sensitive_attrs=sensitive_attrs,
-    num_datapoints=N,
+    num_datapoints=features.shape[0],
     meta_information=meta_information)
 regime='supervised_learning'
-batch_size_safety=237
+batch_size_safety=100
 constraint_strs = ['VAE <= 0.05']
 deltas = [0.02] 
 print("Making parse trees for constraint(s):")
@@ -56,7 +54,7 @@ parse_trees = make_parse_trees_from_constraints(
     sub_regime=sub_regime,columns=sensitive_col_names)
 
 device = torch.device(0)
-model = PytorchFacialVAE(device, **{"x_dim": -1,
+model = PytorchVFAE(device, **{"x_dim": features.shape[1],
         "s_dim": sensitive_attrs.shape[1],
         "y_dim": 1,
         "z1_enc_dim": 100,
@@ -80,23 +78,23 @@ spec = SupervisedSpec(
     optimization_technique='gradient_descent',
     optimizer='adam',
     optimization_hyperparams={
-        'lambda_init'   : np.array([1.0]),
+        'lambda_init'   : np.array([0.5]),
         'alpha_theta'   : 1e-4,
         'alpha_lamb'    : 1e-4,
         'beta_velocity' : 0.9,
         'beta_rmsprop'  : 0.95,
         'use_batches'   : True,
-        'batch_size'    : 237, #237
-        'n_epochs'      : 10,
+        'batch_size'    : 200, #237
+        'n_epochs'      : 30,
         'gradient_library': "autograd",
         'hyper_search'  : None,
         'verbose'       : True,
-        'n_adv_rounds'  : 5,
+        'n_adv_rounds'  : 1,
     },
     
-    batch_size_safety=1000
+    batch_size_safety=200
 )
-save_pickle('/media/yuhongluo/SeldonianExperimentSpecs/facial_recog_spec.pkl',spec,verbose=True)
+save_pickle('/media/yuhongluo/SeldonianExperimentSpecs/health_spec.pkl',spec,verbose=True)
 SA = SeldonianAlgorithm(spec)
 passed_safety,solution = SA.run(debug=True,write_cs_logfile=True)
 if passed_safety:

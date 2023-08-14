@@ -10,7 +10,9 @@ N=23700 # Clips off 5 samples (at random) to make total divisible by 150,
 # the desired batch size
 
 savename_features = '/media/yuhongluo/face_recog/features.pkl'
-savename_labels = '/media/yuhongluo/face_recog/labels.pkl'
+savename_race_labels = '/media/yuhongluo/face_recog/race_labels.pkl'
+savename_age_labels = '/media/yuhongluo/face_recog/age_labels.pkl'
+savename_gender_labels = '/media/yuhongluo/face_recog/gender_labels.pkl'
 savename_sensitive_attrs = '/media/yuhongluo/face_recog/sensitive_attrs.pkl'
 
 print("loading data...")
@@ -32,16 +34,31 @@ X = np.array(data['pixels'].tolist())
 features = X.reshape(X.shape[0],1,48,48)
 
 # Extract gender labels
-labels = data['gender'].values
+gender_labels = data['gender'].values
+race_labels = data['ethnicity'].values
+age_labels = data['age'].values
+
+# The median of age is 29. We split the age label into two categories
+# If it is above or equal 30, we label it with 1.
+# If it is below 30, we label it with 0.
+
+mask = age_labels >= 30
+age_labels = mask.astype('int64')
 
 # Make one-hot sensitive feature columns
-M=data['gender'].values
-mask=~(M.astype("bool"))
-F=mask.astype('int64')
-sensitive_attrs = np.hstack((M.reshape(-1,1),F.reshape(-1,1)))
+race=data['ethnicity'].values.astype(int)
+n_classes = race.max() + 1
+sensitive_attrs = np.zeros([len(race), n_classes])
+for i in range(len(race)):
+  sensitive_attrs[i, race[i]] = 1
+# mask=~(M.astype("bool"))
+# F=mask.astype('int64')
+# sensitive_attrs = np.hstack((M.reshape(-1,1),F.reshape(-1,1)))
 
 # Save to pickle files
 print("Saving features, labels, and sensitive_attrs to pickle files")
 save_pickle(savename_features,features)
-save_pickle(savename_labels,labels)
+save_pickle(savename_race_labels,race_labels)
+save_pickle(savename_gender_labels,gender_labels)
+save_pickle(savename_age_labels,age_labels)
 save_pickle(savename_sensitive_attrs,sensitive_attrs)

@@ -255,8 +255,8 @@ class SeldonianAlgorithm():
 		"""
 		self.set_initial_solution() # sets self.initial_solution so it can be used in candidate selection 
 		if isinstance(self.model, PytorchVFAE) or isinstance(self.model, PytorchFacialVAE):
-			pu = np.mean(self.candidate_sensitive_attrs)
-			print("Estimated C2 (Entropy) Candidate:", pu * np.log(pu) + (1-pu)*np.log(1-pu))
+			pu = np.mean(self.candidate_sensitive_attrs, axis=0)
+			print("Estimated C2 (Entropy) Candidate:", pu) # * np.log(pu) + (1-pu)*np.log(1-pu))
 			self.model.set_pu(pu)
 		candidate_solution = self.run_candidate_selection(
 			write_logfile=write_cs_logfile,
@@ -270,8 +270,8 @@ class SeldonianAlgorithm():
 			
 		# Safety test
 		if isinstance(self.model, PytorchVFAE) or isinstance(self.model, PytorchFacialVAE):
-			pu = np.mean(self.safety_sensitive_attrs)
-			print("Estimated C2 (Entropy) Safety:", pu * np.log(pu) + (1-pu)*np.log(1-pu))
+			pu = np.mean(self.safety_sensitive_attrs, axis=0)
+			print("Estimated C2 (Entropy) Candidate:", pu) # * np.log(pu) + (1-pu)*np.log(1-pu))
 			self.model.set_pu(pu)
 		batch_size_safety = self.spec.batch_size_safety
 		passed_safety, solution = self.run_safety_test(

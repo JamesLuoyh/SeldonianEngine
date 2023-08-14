@@ -55,6 +55,7 @@ class PytorchICVAE(SupervisedPytorchBaseModel):
                  z_dim,
                  dropout_rate,
                  activation=ReLU())
+        self.s_dim = s_dim
         return self.icvae
 
 class InvariantConditionalVariationalAutoEncoder(Module):

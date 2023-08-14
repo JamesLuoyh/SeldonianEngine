@@ -2,7 +2,7 @@ import torch
 from torch.nn import Module, Linear, ReLU, Dropout, BCELoss, CrossEntropyLoss, Sigmoid
 from .pytorch_model import SupervisedPytorchBaseModel
 from math import pi, sqrt
-from torch.distributions import Bernoulli
+from torch.distributions import Bernoulli, Categorical
 
 
 class PytorchVFAE(SupervisedPytorchBaseModel):
@@ -46,13 +46,20 @@ class PytorchVFAE(SupervisedPytorchBaseModel):
                  activation=ReLU())
         self.discriminator = DecoderMLP(z_dim, z_dim, s_dim, activation).to(self.device)
         self.optimizer_d = torch.optim.Adam(self.discriminator.parameters(), lr=alpha_adv)
+        self.s_dim = s_dim
         return self.vfae
 
     # set a prior distribution for the sensitive attribute for VAE case
     def set_pu(self, pu):
-        pu_dist = Bernoulli(probs=torch.tensor(pu).to(self.device))
+        if len(pu) == 1:
+            pu_dist = Bernoulli(probs=torch.tensor(pu).to(self.device))
+        else:
+            pu_dist = Categorical(probs=torch.tensor(pu).to(self.device))
         self.vfae.set_pu(pu_dist)
         return
+
+    def get_representations(self, X):
+        return self.vfae.get_representations(X)
 
 class VariationalFairAutoEncoder(Module):
     """
@@ -78,7 +85,7 @@ class VariationalFairAutoEncoder(Module):
 
         self.decoder_z1 = VariationalMLP(z_dim + y_dim, z1_dec_dim, z_dim, activation)
         self.decoder_y = DecoderMLP(z_dim, x_dec_dim, self.y_out_dim, activation)
-        self.decoder_x = DecoderMLP(z_dim + s_dim, x_dec_dim, x_dim + s_dim, activation)
+        self.decoder_x = DecoderMLP(z_dim + s_dim, x_dec_dim, x_dim, activation)
 
         self.dropout = Dropout(dropout_rate)
         self.x_dim = x_dim
@@ -91,6 +98,13 @@ class VariationalFairAutoEncoder(Module):
     def set_pu(self, pu):
         self.pu = pu
         return
+
+    def get_representations(self, inputs):
+        x, s, y = inputs[:,:self.x_dim], inputs[:,self.x_dim:self.x_dim+self.s_dim], inputs[:,-self.y_dim:]
+        # encode
+        x_s = torch.cat([x, s], dim=1)
+        z1_encoded, z1_enc_logvar, z1_enc_mu = self.encoder_z1(x_s)
+        return z1_encoded
 
     def forward(self, inputs, discriminator):
         """
@@ -125,8 +139,11 @@ class VariationalFairAutoEncoder(Module):
 
         y_decoded = self.decoder_y(z1_encoded)
         s_decoded = discriminator(z1_encoded)
-        
-        p_adversarial = Bernoulli(probs=s_decoded)
+        if self.s_dim == 1:
+            p_adversarial = Bernoulli(probs=s_decoded)
+        else:
+            p_adversarial = Categorical(probs=s_decoded)
+            s = torch.argmax(s, dim=1)
         log_p_adv = p_adversarial.log_prob(s)
         log_p_u = self.pu.log_prob(s)
         self.mi_sz = log_p_adv - log_p_u
@@ -226,10 +243,10 @@ class VFAELoss(Module):
         :return: the loss value as Tensor
         """
         x, s, y = y_true['x'], y_true['s'], y_true['y']
-        x_s = torch.cat([x, s], dim=-1)
+        # x_s = torch.cat([x, s], dim=-1)
         device = y.device
         supervised_loss = self.bce(y_pred['y_decoded'], y.to(device))
-        reconstruction_loss = self.bce(y_pred['x_decoded'], x_s)
+        reconstruction_loss = self.bce(y_pred['x_decoded'], x)
         zeros = torch.zeros_like(y_pred['z1_enc_logvar'])
         kl_loss_z1 = self._kl_gaussian(y_pred['z1_enc_logvar'],
                                        y_pred['z1_enc_mu'],
